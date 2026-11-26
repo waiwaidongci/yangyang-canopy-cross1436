@@ -8,8 +8,12 @@ class Role(StrEnum):
 
 
 class RunStatus(StrEnum):
+    RUNNING = 'running'
     COMPLETED = 'completed'
     FAILED = 'failed'
+    INVALIDATED = 'invalidated'
+    # Descriptive alias retained for clients/tests using stale terminology.
+    STALE = 'stale'
 
 
 class Decision(StrEnum):

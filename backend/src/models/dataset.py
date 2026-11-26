@@ -11,4 +11,9 @@ class Dataset(Base):
     name: Mapped[str] = mapped_column(String(140), unique=True)
     checksum: Mapped[str] = mapped_column(String(64))
     rows: Mapped[list] = mapped_column(JSON)
+    # Cached canonical link list.  RollLink rows are the transactional source;
+    # these JSON fields also keep lightweight/directly constructed datasets usable.
+    roll_numbers: Mapped[list | dict | None] = mapped_column(JSON, nullable=True, default=list)
+    roll_assignments: Mapped[list | dict | None] = mapped_column(JSON, nullable=True, default=list)
+    roll_groups: Mapped[list | dict | None] = mapped_column(JSON, nullable=True, default=list)
     created_by: Mapped[int] = mapped_column(ForeignKey('accounts.id'))

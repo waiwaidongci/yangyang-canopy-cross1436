@@ -8,6 +8,7 @@ from src.utils.csv_files import write_rows
 def report_detail(session, run_id, actor):
     run, review = get_run(session, run_id, actor)
     return {**run_info(run, review), 'result': run.result, 'error': run.error,
+            'grouping': run.grouping,
             'review': review_info(review) if review else None}
 
 

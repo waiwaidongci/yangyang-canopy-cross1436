@@ -49,6 +49,26 @@ def _batches(evaluation: HoldoutEvaluation) -> dict:
     }, rows)
 
 
+def _roll_groups(evaluation: HoldoutEvaluation) -> dict:
+    groups = evaluation.groups or []
+    rows = [{
+        "group_id": group.group_id,
+        "lot_ids": "|".join(group.lot_ids),
+        "lots": len(group.lot_ids),
+        "samples": group.rows,
+        "crossed": group.crossed,
+        "main_mae_mm": round(group.main_mae, 4),
+        "cross_mae_mm": round(group.cross_mae, 4),
+        "gain_mm": round(group.gain, 4),
+    } for group in groups]
+    return _table("holdout_groups", "布卷组等权误差对账", {
+        "group_id": "布卷组", "lot_ids": "连通批次", "lots": "批次数量",
+        "samples": "实测缝位数", "crossed": "启用交叉数",
+        "main_mae_mm": "组内主效应 MAE（mm）", "cross_mae_mm": "组内交叉 MAE（mm）",
+        "gain_mm": "MAE 改善（mm）",
+    }, rows)
+
+
 SCORE_LABELS = {
     "id": "缝位编号", "lot_id": "裁缝批次", "seam_type": "缝型", "edge_finish": "布边处理",
     "main_mm": "主效应估计（mm）", "cross_mm": "交叉方案估计（mm）", "status": "启用或回退原因",
@@ -102,37 +122,61 @@ def _coefficients(model: CrossModel) -> dict:
 
 
 def build_report(
-    model: CrossModel, holdout: HoldoutEvaluation, pending: list[ScoredSeam],
+    model: CrossModel, holdout: HoldoutEvaluation, pending: list[ScoredSeam], plan=None,
 ) -> dict:
     fallback = sum(batch.rows - batch.crossed for batch in holdout.batches)
     gain_mm = round(holdout.gain, 4)
-    worsened = sum(round(batch.gain, 4) < 0 for batch in holdout.batches)
+    group_count = len(holdout.groups or [])
+    merged_groups = [group for group in (holdout.groups or []) if len(group.lot_ids) > 1]
+    worsened = sum(round(unit.gain, 4) < 0 for unit in holdout.macro_units)
     warnings = []
     if not model.offsets:
         warnings.append("当前训练支持门槛下没有可启用的交叉组合，所有缝位采用主效应估计。")
     if fallback:
         warnings.append(f"留出样本中有 {fallback} 条采用回退，启用范围见组合支持度表。")
     if gain_mm <= 0:
-        warnings.append("交叉方案在本次整批留出中未降低总体误差，复检排序建议沿用主效应并补抽。")
+        warnings.append("交叉方案在本次组外留出中未降低总体误差，复检排序建议沿用主效应并补抽。")
     elif worsened:
-        warnings.append(f"总体误差下降，但有 {worsened} 个留出批次误差上升，需逐批复核。")
+        warnings.append(f"总体误差下降，但有 {worsened} 个留出布卷组误差上升，需逐组复核。")
+    if plan is not None and plan.partition.moved_lot_ids:
+        warnings.append(
+            "同卷布批次已整组重划，原用途标签中的 "
+            + "、".join(plan.partition.moved_lot_ids)
+            + " 已按布卷组调整。"
+        )
     if not pending:
         warnings.append("当前没有待抽检批次，复检清单为空。")
 
-    return {
-        "summary": (
+    if merged_groups:
+        summary = (
+            f"训练阶段启用 {len(model.offsets)} 个交叉组合。两种方案共用主效应，"
+            f"在 {group_count} 个留出布卷组、{len(holdout.batches)} 个批次的 "
+            f"{len(holdout.records)} 条实测缝位上对照；每组先汇总组内 MAE，再对布卷组等权平均。"
+            "MAE 改善为正表示交叉方案误差下降。"
+        )
+    else:
+        summary = (
             f"训练阶段启用 {len(model.offsets)} 个交叉组合。两种方案共用主效应，"
             f"在 {len(holdout.batches)} 个留出批次的 {len(holdout.records)} 条实测缝位上对照，"
             "每批先算平均绝对误差，再对批次等权平均。MAE 改善为正表示交叉方案误差下降。"
-        ),
-        "metrics": {
-            "留出批次数": len(holdout.batches), "主效应 MAE（mm）": round(holdout.main_mae, 4),
-            "交叉 MAE（mm）": round(holdout.cross_mae, 4), "MAE 改善（mm）": gain_mm,
-            "留出交叉覆盖率（%）": round(holdout.coverage, 2),
-        },
-        "tables": [
-            _pairs(model, holdout, pending), _batches(holdout), _held_records(holdout),
-            _pending_records(pending), _coefficients(model),
-        ],
+        )
+    metrics = {
+        "留出批次数": len(holdout.batches), "主效应 MAE（mm）": round(holdout.main_mae, 4),
+        "交叉 MAE（mm）": round(holdout.cross_mae, 4), "MAE 改善（mm）": gain_mm,
+        "留出交叉覆盖率（%）": round(holdout.coverage, 2),
+    }
+    if merged_groups:
+        metrics["留出布卷组数"] = group_count
+    tables = [
+        _pairs(model, holdout, pending), _batches(holdout), _held_records(holdout),
+        _pending_records(pending), _coefficients(model),
+    ]
+    if merged_groups:
+        tables.insert(2, _roll_groups(holdout))
+
+    return {
+        "summary": summary,
+        "metrics": metrics,
+        "tables": tables,
         "warnings": warnings,
     }

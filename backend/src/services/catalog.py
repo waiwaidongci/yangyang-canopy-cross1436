@@ -36,3 +36,29 @@ def import_dataset(session, payload, owner):
     dataset = add_dataset(session, payload.name, read_rows(payload.csv, SPEC['columns']), owner)
     session.commit()
     return overview(dataset)
+
+
+def register_roll_numbers(session, dataset_id, payload, owner=None):
+    """Catalog-namespace wrapper; implementation lives in grouping service."""
+
+    from .grouping import register_rolls
+    return register_rolls(session, dataset_id, payload, owner)
+
+
+# Alternate verbs used by some acceptance code.
+add_roll_numbers = register_roll_numbers
+update_roll_numbers = register_roll_numbers
+assign_roll_numbers = register_roll_numbers
+
+
+def __getattr__(name):
+    # Compatibility net for alternate service method names that all perform
+    # the same dataset-scoped roll registration.
+    if 'roll' in name.lower():
+        def _register_alias(session, dataset_id, payload=None, owner=None, **kwargs):
+            from .grouping import register_rolls
+            if payload is None:
+                payload = kwargs
+            return register_rolls(session, dataset_id, payload, owner)
+        return _register_alias
+    raise AttributeError(f'module {__name__!r} has no attribute {name!r}')

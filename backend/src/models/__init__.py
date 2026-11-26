@@ -2,7 +2,9 @@
 
 from .account import Account
 from .dataset import Dataset
+from .evaluation import Evaluation
 from .review import Review
+from .roll_link import RollLink
 from .run import Run
 
-__all__ = ['Account', 'Dataset', 'Review', 'Run']
+__all__ = ['Account', 'Dataset', 'Evaluation', 'Review', 'RollLink', 'Run']

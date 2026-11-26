@@ -17,6 +17,11 @@ TRAIN = "train"
 HOLDOUT = "holdout"
 PENDING = "pending"
 MAX_WRINKLE_MM = 30.0
+MIN_TRAIN_LOTS = 3
+MIN_TRAIN_ROWS = 18
+MIN_HOLDOUT_LOTS = 3
+MIN_HOLDOUT_ROWS = 9
+HOLDOUT_TARGET_RATIO = 0.3
 
 
 class SeamRecord(TypedDict):
@@ -84,7 +89,10 @@ def normalize_rows(rows: list[dict]) -> list[SeamRecord]:
         lot_sets[split].add(lot)
         row_counts[split] += 1
 
-    for split, label, min_rows in ((TRAIN, "训练", 18), (HOLDOUT, "留出", 9)):
-        if len(lot_sets[split]) < 3 or row_counts[split] < min_rows:
-            raise ValueError(f"{label}数据至少需要 3 个独立批次和 {min_rows} 条实测记录。")
+    for split, label, min_lots, min_rows in (
+        (TRAIN, "训练", MIN_TRAIN_LOTS, MIN_TRAIN_ROWS),
+        (HOLDOUT, "留出", MIN_HOLDOUT_LOTS, MIN_HOLDOUT_ROWS),
+    ):
+        if len(lot_sets[split]) < min_lots or row_counts[split] < min_rows:
+            raise ValueError(f"{label}数据至少需要 {min_lots} 个独立批次和 {min_rows} 条实测记录。")
     return normalized

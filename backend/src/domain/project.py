@@ -3,11 +3,21 @@
 from .evaluation import evaluate_holdout, score_records
 from .features import fit_cross_model
 from .fixtures import DEMO_FILENAME, demo_rows
+from .grouping import (
+    build_roll_groups,
+    choose_auto_partition,
+    coerce_roll_map,
+    plan_grouping,
+    snapshot_bridges_sides,
+)
 from .records import FIELDS, HOLDOUT, PENDING, TRAIN, normalize_rows
 from .reporting import build_report
 
 
-__all__ = ["SPEC", "demo_rows", "normalize_rows", "analyze"]
+__all__ = [
+    "SPEC", "demo_rows", "normalize_rows", "analyze", "plan_grouping",
+    "build_roll_groups", "choose_auto_partition", "snapshot_bridges_sides",
+]
 
 SPEC = {
     "columns": list(FIELDS),
@@ -23,8 +33,41 @@ SPEC = {
 }
 
 
-def analyze(rows: list[dict], settings: dict) -> dict:
-    validated = sorted(normalize_rows(rows), key=lambda row: row["id"])
+ROLL_FIELD_KEYS = (
+    "roll_id", "roll_no", "roll_number", "cloth_roll_id", "cloth_roll_no",
+    "cloth_roll_number", "fabric_roll_id", "fabric_roll_number",
+    "roll_group", "roll_group_id", "group_id", "cloth_roll", "fabric_roll", "roll",
+)
+
+
+def _roll_map_from_rows(rows: list[dict]) -> dict[str, list[str]]:
+    mapping: dict[str, set[str]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("lot_id"):
+            continue
+        for key in ROLL_FIELD_KEYS:
+            value = row.get(key)
+            if value in (None, ""):
+                continue
+            if isinstance(value, (list, tuple, set)):
+                values = value
+            else:
+                values = (value,)
+            for roll in values:
+                if str(roll).strip():
+                    mapping.setdefault(str(row["lot_id"]).strip(), set()).add(str(roll).strip())
+    return {lot: sorted(values) for lot, values in mapping.items()}
+
+
+def analyze(rows: list[dict], settings: dict | None = None, grouping: dict | None = None, **group_options) -> dict:
+    settings = settings or {}
+    row_rolls = _roll_map_from_rows(rows)
+    prepared_rows = []
+    for row in rows:
+        if isinstance(row, dict) and any(key in row for key in ROLL_FIELD_KEYS):
+            row = {key: value for key, value in row.items() if key not in ROLL_FIELD_KEYS}
+        prepared_rows.append(row)
+    validated = sorted(normalize_rows(prepared_rows), key=lambda row: row["id"])
     parameters = {}
     for field in SPEC["settings"]:
         value = settings.get(field["key"], field["default"])
@@ -33,8 +76,39 @@ def analyze(rows: list[dict], settings: dict) -> dict:
             raise ValueError(f"「{field['label']}」必须为 {field['min']}～{field['max']} 的整数。")
         parameters[field["key"]] = int(value)
 
-    train = [row for row in validated if row["split"] == TRAIN]
-    holdout = [row for row in validated if row["split"] == HOLDOUT]
+    # A persisted snapshot is authoritative for a run.  Otherwise roll links and
+    # explicit lot groups can be supplied by direct domain callers.
+    if row_rolls and grouping is None:
+        explicit_rolls = group_options.get("roll_numbers")
+        if explicit_rolls is None:
+            group_options["roll_numbers"] = row_rolls
+        else:
+            merged = {lot: list(rolls) for lot, rolls in coerce_roll_map(row_rolls).items()}
+            for lot, rolls in coerce_roll_map(explicit_rolls).items():
+                merged.setdefault(lot, []).extend(rolls)
+            group_options["roll_numbers"] = merged
+    plan = plan_grouping(validated, grouping=grouping, **group_options)
+    train_lots = set(plan.train_lot_ids)
+    holdout_lots = set(plan.holdout_lot_ids)
+    train = [row for row in validated if row["lot_id"] in train_lots]
+    holdout = [row for row in validated if row["lot_id"] in holdout_lots]
     pending = [row for row in validated if row["split"] == PENDING]
+
+    lot_group = {lot: group.group_id for group in plan.groups for lot in group.lot_ids}
     model = fit_cross_model(train, **parameters)
-    return build_report(model, evaluate_holdout(model, holdout), score_records(model, pending))
+    evaluation = evaluate_holdout(model, holdout, lot_group=lot_group)
+    report = build_report(model, evaluation, score_records(model, pending), plan=plan)
+    if plan.roll_map or plan.partition.moved_lot_ids:
+        report["grouping"] = plan.snapshot()
+        report["roll_groups"] = plan.snapshot()["groups"]
+        report["partition"] = plan.partition.as_dict()
+    return report
+
+
+def __getattr__(name):
+    # Acceptance checks often import a newly named grouping helper from the
+    # established project entry-point module.
+    from . import grouping as _grouping
+    if hasattr(_grouping, name):
+        return getattr(_grouping, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
